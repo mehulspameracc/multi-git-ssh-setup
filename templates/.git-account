@@ -1,0 +1,11 @@
+na# GitHub Account Configuration
+# This file associates this repository with a specific GitHub account
+
+ACCOUNT_ALIAS="work"
+GIT_NAME="Work Account"
+GIT_EMAIL="work@example.com"
+SSH_KEY_PATH="~/.ssh/github/github_work"
+SSH_HOST_ALIAS="github-work"
+
+# Generated on: 2025-09-16
+# Last updated: 2025-09-16

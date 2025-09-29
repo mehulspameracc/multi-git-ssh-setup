@@ -1,0 +1,10 @@
+[
+    {
+        "account": "work",
+        "email": "your.email@company.com",
+        "private_key": "~/.ssh/github/github_work",
+        "public_key": "~/.ssh/github/github_work.pub",
+        "created_at": "2025-08-26",
+        "last_used": "2025-08-26"
+    }
+]

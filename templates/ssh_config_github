@@ -1,0 +1,5 @@
+# GitHub Account Template
+Host github-{{account}}
+  HostName github.com
+  User git
+  IdentityFile {{key_path}}
