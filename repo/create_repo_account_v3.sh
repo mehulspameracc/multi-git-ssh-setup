@@ -2,7 +2,7 @@
 
 # Enhanced Repository Account Association v3.0 - macOS Compatible
 # Focus: Associate existing repos/directories with GitHub accounts
-# Features: Advanced TUI (arrows/tab/numbers), full verification, optional clone
+# Features: Reliable TUI, full verification, jq-free
 
 # Color codes (from v2)
 RED='\033[0;31m'
@@ -14,9 +14,6 @@ CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 BOLD='\033[1m'
-SELECTED_BG='\033[48;5;17m'
-SELECTED_FG='\033[1;97m'
-HIGHLIGHT='\033[1;33m'
 
 # Emojis
 EMOJI_CHECK="✅"
@@ -37,13 +34,20 @@ GITHUB_DIR="$HOME/.ssh/github"
 ACCOUNTS_JSON="$GITHUB_DIR/accounts.json"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Source spinner (from v2 style)
-SPINNER_LIB="$SCRIPT_DIR/../utils/external/spinner.sh"
-if [ -f "$SPINNER_LIB" ]; then
-    source "$SPINNER_LIB"
-else
-    echo -e "${EMOJI_WARN} Spinner library not found${NC}"
-fi
+# Simple spinner (inline, no deps)
+spinner() {
+    local pid=$1
+    local delay=0.1
+    local spinstr='|/-\'
+    while kill -0 $pid 2>/dev/null; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+}
 
 # JSON helpers (jq-free, from v2)
 json_list_accounts() {
@@ -55,14 +59,14 @@ json_list_accounts() {
 json_get_account_email() {
     local account="$1"
     if [ -f "$ACCOUNTS_JSON" ]; then
-        grep -A5 "\"account\"[[:space:]]*:[[:space:]]*\"$account\"" "$ACCOUNTS_JSON" 2>/dev/null | grep '"email"' | head -1 | sed 's/.*"email": *"\([^"]*\)".*/\1/'
+        grep -A5 "\"account\"[[:space:]]*:[[:space:]]*\"$account\"" "$ACCOUNTS_JSON" 2>/dev/null | grep '"email"' | head -1 | sed 's/.*"email":"\([^"]*\)".*/\1/'
     fi
 }
 
 json_get_ssh_key_path() {
     local account="$1"
     if [ -f "$ACCOUNTS_JSON" ]; then
-        grep -A5 "\"account\"[[:space:]]*:[[:space:]]*\"$account\"" "$ACCOUNTS_JSON" 2>/dev/null | grep '"private_key"' | head -1 | sed 's/.*"private_key": *"\([^"]*\)".*/\1/'
+        grep -A5 "\"account\"[[:space:]]*:[[:space:]]*\"$account\"" "$ACCOUNTS_JSON" 2>/dev/null | grep '"private_key"' | head -1 | sed 's/.*"private_key":"\([^"]*\)".*/\1/'
     fi
 }
 
@@ -127,82 +131,76 @@ ensure_gitignore_has_git_account() {
     fi
 }
 
-# Repair (from v2)
+# Repair (simple call)
 repair_accounts_if_needed() {
     if [ ! -f "$ACCOUNTS_JSON" ] || [ ! -s "$ACCOUNTS_JSON" ] || [ "$(grep -c '"account":' "$ACCOUNTS_JSON")" -eq 0 ]; then
         echo -e "${EMOJI_WARN}${YELLOW} Repairing account registry...${NC}"
         local repair_script="$SCRIPT_DIR/../utils/repair_accounts.sh"
         if [ -f "$repair_script" ]; then
-            if command -v run_with_spinner >/dev/null 2>&1; then
-                run_with_spinner "dots" "Repairing..." "" "$repair_script"
-            else
-                bash "$repair_script"
-            fi
+            bash "$repair_script"
         else
-            echo -e "${EMOJI_ERROR}${RED} Repair script not found${NC}"
+            echo -e "${EMOJI_ERROR}${RED} Repair script not found. Run setup_ssh_enhanced_v2.sh first.${NC}"
             exit 1
         fi
     fi
 }
 
-# Enhanced TUI Selection (build on v2, add arrow/tab)
+# Reliable TUI Selection (numbered, no arrows for broad compatibility)
 enhanced_account_select() {
     local accounts=($(json_list_accounts))
-    local selected_index=0
-    local key
-    local confirmed=false
+    local choice
+    local selected_account=""
+    local i
+    local num
+    local email
+    local found=false
     
     if [ ${#accounts[@]} -eq 0 ]; then
         echo ""
         return 1
     fi
     
-    echo -e "\n${EMOJI_KEY} ${CYAN}Select GitHub Account (↑↓ arrows, Tab, number, Enter):${NC}"
-    
-    while [ $confirmed = false ]; do
-        # Display menu with highlight
+    while [ -z "$selected_account" ]; do
+        clear
+        echo -e "\n${EMOJI_KEY} ${CYAN}Select GitHub Account:${NC}"
+        echo -e "${YELLOW}Available accounts:${NC}"
+        
+        # Numbered menu
         for i in "${!accounts[@]}"; do
-            local account_display="${accounts[$i]} ($(json_get_account_email "${accounts[$i]}"))"
-            if [ $i -eq $selected_index ]; then
-                echo -ne "${SELECTED_BG}${SELECTED_FG} > $account_display ${NC}\n"
-            else
-                local num=$((i + 1))
-                echo -ne "${CYAN}${num}) $account_display${NC}\n"
-            fi
+            num=$((i + 1))
+            email=$(json_get_account_email "${accounts[$i]}")
+            echo -e "${CYAN}${num}) ${accounts[$i]} (${email:-No email})${NC}"
         done
         
-        # Read key
-        read -n1 -s key
-        case "$key" in
-            $'\e' )  # Escape for arrows
-                read -n1 -s key2
-                read -n1 -s key3 2>/dev/null
-                if [ "$key2" = '[' ]; then
-                    case "$key3" in
-                        A) selected_index=$(( (selected_index - 1 + ${#accounts[@]}) % ${#accounts[@]} )) ;;  # Up
-                        B) selected_index=$(( (selected_index + 1) % ${#accounts[@]} )) ;;  # Down
-                    esac
+        echo -e "${YELLOW}\nEnter choice (number or account name):${NC}"
+        read -r choice
+        
+        found=false
+        # Check number
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -le ${#accounts[@]} ] && [ "$choice" -ge 1 ]; then
+            i=$((choice - 1))
+            selected_account="${accounts[$i]}"
+            found=true
+            echo -e "${GREEN}${EMOJI_CHECK} Selected: $selected_account${NC}"
+        # Check name match
+        else
+            for i in "${!accounts[@]}"; do
+                if [ "${accounts[$i]}" = "$choice" ]; then
+                    selected_account="${accounts[$i]}"
+                    found=true
+                    echo -e "${GREEN}${EMOJI_CHECK} Selected: $selected_account${NC}"
+                    break
                 fi
-                ;;
-            $'\t')  # Tab: next
-                selected_index=$(( (selected_index + 1) % ${#accounts[@]} ))
-                ;;
-            $'\n' | '' )  # Enter
-                confirmed=true
-                ;;
-            [0-9] )
-                local num_choice=$((key - 48))  # ASCII to num
-                if [ $num_choice -ge 1 ] && [ $num_choice -le ${#accounts[@]} ]; then
-                    selected_index=$((num_choice - 1))
-                    confirmed=true
-                fi
-                ;;
-        esac
-        # Clear screen for redraw
-        clear
+            done
+        fi
+        
+        if [ "$found" = false ]; then
+            echo -e "${EMOJI_ERROR}${RED} Invalid selection. Try again.${NC}"
+            sleep 1  # Brief pause
+        fi
     done
     
-    echo "${accounts[$selected_index]}"
+    echo "$selected_account"
 }
 
 # Main script
@@ -233,10 +231,13 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo -e "${EMOJI_WARN}${YELLOW} Not a git repository. Initialize? (y/n)${NC}"
     read -r init_choice
     if [[ "$init_choice" =~ ^[Yy] ]]; then
-        if command -v run_with_spinner >/dev/null 2>&1; then
-            run_with_spinner "dots" "Initializing git..." "" "git init"
+        echo -n "Initializing git... "
+        git init >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            echo -e "${EMOJI_CHECK}${GREEN} Success${NC}"
         else
-            git init
+            echo -e "${EMOJI_ERROR}${RED} Failed${NC}"
+            exit 1
         fi
         echo -e "${EMOJI_CHECK}${GREEN} Git initialized.${NC}"
     else
@@ -256,7 +257,6 @@ if [ -n "$existing_file" ]; then
         read -r overwrite_choice
         if [[ "$overwrite_choice" =~ ^[Nn] ]]; then
             echo -e "${EMOJI_CHECK}${GREEN} Keeping existing config.${NC}"
-            # Verify existing
             verify_setup "$selected_account"
             exit 0
         fi
@@ -284,19 +284,35 @@ remote_url=$(git remote get-url origin 2>/dev/null)
 if [ -z "$remote_url" ]; then
     echo -e "${EMOJI_GIT} No remote origin. Enter URL (e.g., git@github.com:user/repo.git): "
     read -r remote_url
-    if [[ "$remote_url" =~ github\.com ]]; then
-        # Suggest alias
-        account_clean=$(echo "$selected_account" | tr -cd '[:alnum:]_')
-        remote_url=$(echo "$remote_url" | sed "s|github\.com\([:/]\)|github-$account_clean\1|")
-        echo -e "${YELLOW} Suggested SSH: $remote_url${NC}"
-    fi
-    if command -v run_with_spinner >/dev/null 2>&1; then
-        run_with_spinner "dots" "Adding remote..." "" "git remote add origin '$remote_url'"
+    # Basic validation
+    if [[ ! "$remote_url" =~ ^(git@|git://|https?://) ]]; then
+        echo -e "${EMOJI_ERROR}${RED} Invalid URL format. Skipping add.${NC}"
+        remote_url=""
     else
-        git remote add origin "$remote_url"
+        if [[ "$remote_url" =~ github\.com ]]; then
+            account_clean=$(echo "$selected_account" | tr -cd '[:alnum:]_')
+            remote_url=$(echo "$remote_url" | sed "s|github\.com\([:/]\)|github-$account_clean\1|")
+            echo -e "${YELLOW} Suggested SSH: $remote_url${NC}"
+        fi
+        echo -n "Adding remote... "
+        git remote add origin "$remote_url" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            echo -e "${EMOJI_CHECK}${GREEN} Success${NC}"
+        else
+            echo -e "${EMOJI_ERROR}${RED} Failed (may already exist)${NC}"
+        fi
     fi
 else
     echo -e "${EMOJI_GIT} Existing remote: $remote_url"
+    # Optional: Update to use account alias
+    echo -e "${YELLOW}Update remote to use account alias? (y/n) [n]:${NC}"
+    read -r update_choice
+    if [[ "$update_choice" =~ ^[Yy] ]]; then
+        account_clean=$(echo "$selected_account" | tr -cd '[:alnum:]_')
+        new_url=$(echo "$remote_url" | sed "s|github\.com\([:/]\)|github-$account_clean\1|")
+        git remote set-url origin "$new_url"
+        echo -e "${EMOJI_CHECK}${GREEN} Updated to: $new_url${NC}"
+    fi
 fi
 
 # Write .git-account
@@ -325,36 +341,27 @@ verify_setup() {
     
     echo -e "\n${EMOJI_MAG} Verifying setup..."
     
-    # SSH test
-    if command -v run_with_spinner >/dev/null 2>&1; then
-        local ssh_success=false
-        run_with_spinner "shark" "Testing SSH..." "" "timeout 20 ssh -T git@github-$account_clean 2>&1 | grep -q 'successfully authenticated' && echo true || echo false"
-        ssh_success=$(tail -1)  # Hacky, assume output
-        if [ "$ssh_success" = "true" ]; then
-            echo -e "${EMOJI_CHECK}${GREEN} SSH: Success${NC}"
-        else
-            echo -e "${EMOJI_ERROR}${RED} SSH: Failed${NC}"
-        fi
+    # SSH test (direct, reliable)
+    echo -n "${EMOJI_MAG} Testing SSH... "
+    if command -v timeout >/dev/null 2>&1; then
+        output=$(timeout 20 ssh -T git@github-$account_clean 2>&1)
     else
-        ssh -T git@github-$account_clean >/dev/null 2>&1
-        if [ $? -eq 1 ] && ssh -T git@github-$account_clean 2>&1 | grep -q "successfully authenticated"; then
-            echo -e "${EMOJI_CHECK}${GREEN} SSH: Success${NC}"
-        else
-            echo -e "${EMOJI_ERROR}${RED} SSH: Failed${NC}"
-        fi
+        output=$(ssh -T git@github-$account_clean 2>&1)
+    fi
+    if echo "$output" | grep -q "successfully authenticated"; then
+        echo -e "${EMOJI_CHECK}${GREEN} Success${NC}"
+    else
+        echo -e "${EMOJI_ERROR}${RED} Failed${NC}"
+        echo -e "${YELLOW}Output: $output${NC}"
     fi
     
     # Fetch
-    if command -v run_with_spinner >/dev/null 2>&1; then
-        run_with_spinner "dots" "Fetching..." "" "git fetch origin"
-        if [ $? -eq 0 ]; then
-            echo -e "${EMOJI_CHECK}${GREEN} Fetch: Success${NC}"
-        else
-            echo -e "${EMOJI_WARN}${YELLOW} Fetch: No remote changes or failed${NC}"
-        fi
+    echo -n "${EMOJI_GIT} Fetching... "
+    git fetch origin 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo -e "${EMOJI_CHECK}${GREEN} Success${NC}"
     else
-        git fetch origin >/dev/null 2>&1
-        echo -e "${EMOJI_CHECK}${GREEN} Fetch: Completed${NC}"
+        echo -e "${EMOJI_WARN}${YELLOW} No changes or failed${NC}"
     fi
     
     # Log
@@ -363,5 +370,5 @@ verify_setup() {
     
     # Branches
     echo -e "\n${EMOJI_GIT} Branches:"
-    git branch -a --list 2>/dev/null | sed 's/^[[:space:]]*//'
+    git branch -a 2>/dev/null | sed 's/^[[:space:]]*//'
 }
